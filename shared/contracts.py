@@ -99,8 +99,11 @@ class Plan:
     rationale: str = ""
 
 
+
 @dataclass(frozen=True)
 class ToolResult:
+    """Canonical result for one tool execution step."""
+
     task_id: str
     step_id: str
     status: ExecutionStatus
@@ -109,6 +112,18 @@ class ToolResult:
     error: ToolError | None = None
     verified: bool = False
     verification_details: str | None = None
+    tool_name: str = ""
+
+    @property
+    def error_code(self) -> str | None:
+        """Compatibility accessor for older execution-engine callers."""
+        return self.error.code.value if self.error is not None else None
+
+    @property
+    def error_message(self) -> str | None:
+        """Compatibility accessor for older execution-engine callers."""
+        return self.error.message if self.error is not None else None
+
 
 
 @dataclass(frozen=True)

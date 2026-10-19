@@ -8,7 +8,7 @@ from typing import Any
 
 
 class SafetyPolicy:
-    """Require approval unless a tool call is explicitly read-only."""
+    """Require approval unless a tool is explicitly recognized as read-only."""
 
     _READ_ONLY_OPERATIONS = {
         "read",
@@ -25,6 +25,7 @@ class SafetyPolicy:
         "exists",
         "stat",
         "info",
+        "file_info",
         "status",
         "current_branch",
         "branch",
@@ -34,14 +35,41 @@ class SafetyPolicy:
         "fetch",
         "fetch_page",
         "get_page",
+        "open_page",
+        "inspect_page",
+        "close_page",
     }
 
     _MUTATING_WORDS = {
-        "write", "create", "update", "edit", "modify", "delete",
-        "remove", "move", "rename", "copy", "replace", "append",
-        "overwrite", "install", "uninstall", "execute", "run",
-        "shell", "command", "commit", "push", "pull", "merge",
-        "checkout", "reset", "clean", "rebase", "kill", "shutdown",
+        "write",
+        "create",
+        "update",
+        "edit",
+        "modify",
+        "delete",
+        "remove",
+        "move",
+        "rename",
+        "copy",
+        "replace",
+        "append",
+        "overwrite",
+        "install",
+        "uninstall",
+        "execute",
+        "run",
+        "shell",
+        "command",
+        "commit",
+        "push",
+        "pull",
+        "merge",
+        "checkout",
+        "reset",
+        "clean",
+        "rebase",
+        "kill",
+        "shutdown",
         "restart",
     }
 
@@ -70,15 +98,15 @@ class SafetyPolicy:
         name = tool_name.strip().lower()
         parts = self._parts(name)
 
-        # Arbitrary terminal/shell execution always needs approval.
+        # Terminal and shell execution always require approval.
         if "terminal" in parts or "shell" in parts:
             return True
 
-        # Any recognized mutating/consequential word requires approval.
+        # Any mutating or consequential operation requires approval.
         if parts.intersection(self._MUTATING_WORDS):
             return True
 
-        # Require a recognized namespace and an exact operation name.
+        # A recognized namespace and exact operation are required.
         if "." not in name:
             return True
 

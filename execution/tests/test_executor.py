@@ -132,3 +132,56 @@ def test_invalid_arguments_type():
 
     assert result.success is False
     assert result.error_code == "INVALID_ARGUMENTS"
+    assert result.verified is False
+
+
+
+def test_rejected_request_is_not_marked_verified():
+    executor = setup_executor()
+
+    result = executor.execute("missing")
+
+    assert result.success is False
+    assert result.error_code == "TOOL_NOT_FOUND"
+    assert result.verified is False
+
+
+
+def test_wrong_action_token_does_not_execute_tool():
+    registry = ToolRegistry()
+    calls = []
+    registry.register("dangerous", lambda value: calls.append(value))
+
+    executor = Executor(registry)
+    token = executor.approval_manager.issue(
+        "dangerous", {"value": "original"}
+    )
+
+    result = executor.execute(
+        "dangerous",
+        {"value": "changed"},
+        requires_approval=True,
+        approval_token=token,
+    )
+
+    assert result.success is False
+    assert result.error_code == "APPROVAL_INVALID"
+    assert calls == []
+
+
+def test_unknown_token_does_not_execute_tool():
+    registry = ToolRegistry()
+    calls = []
+    registry.register("dangerous", lambda: calls.append("executed"))
+
+    executor = Executor(registry)
+
+    result = executor.execute(
+        "dangerous",
+        requires_approval=True,
+        approval_token="not-a-real-token",
+    )
+
+    assert result.success is False
+    assert result.error_code == "APPROVAL_INVALID"
+    assert calls == []

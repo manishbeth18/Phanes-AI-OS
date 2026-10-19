@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
+
+from shared.contracts import ErrorCode, ExecutionStatus, ToolError, ToolResult
 
 from execution.approval import ApprovalManager
 from execution.browser import BrowserToolError
 from execution.filesystem import FilesystemToolError
 from execution.git_tools import GitToolError
+from execution.safety_policy import SafetyPolicy
 from execution.terminal import TerminalToolError
 from execution.tool_registry import (
     ToolNotFoundError,
@@ -19,20 +22,16 @@ from execution.tool_registry import (
 )
 
 
-@dataclass
-class ExecutionResult:
-    """Structured result returned after a tool execution attempt."""
-
-    tool_name: str
-    success: bool
-    output: Any = None
-    error_code: str | None = None
-    error_message: str | None = None
-    verified: bool = False
-
-
 class Executor:
-    """Execute registered tools with registry-enforced safety metadata."""
+    """Execute registered tools using canonical PHANES result contracts."""
+
+    _POLICY_ENFORCED_NAMESPACES = {
+        "filesystem",
+        "git",
+        "browser",
+        "terminal",
+        "shell",
+    }
 
     def __init__(
         self,
@@ -49,26 +48,47 @@ class Executor:
 
         self.registry = registry
         self.approval_manager = approval_manager or ApprovalManager()
+        self.safety_policy = SafetyPolicy()
 
     @staticmethod
     def _failure(
         tool_name: str,
-        code: str,
+        error_code: ErrorCode,
         message: str,
-    ) -> ExecutionResult:
-        return ExecutionResult(
+        *,
+        task_id: str,
+        step_id: str,
+        retryable: bool = False,
+    ) -> ToolResult:
+        return ToolResult(
+            task_id=task_id,
+            step_id=step_id,
             tool_name=tool_name,
+            status=ExecutionStatus.FAILED,
             success=False,
-            error_code=code,
-            error_message=message,
-            verified=True,
+            error=ToolError(
+                code=error_code,
+                message=message,
+                retryable=retryable,
+                details={"tool_name": tool_name},
+            ),
+            verified=False,
         )
 
     def approval_required(self, tool_name: str) -> bool:
-        """Return whether registry metadata requires approval."""
+        """Return whether registry metadata or safety policy requires approval."""
         metadata = self.registry.get_metadata(tool_name)
+        namespace = tool_name.split(".", 1)[0].lower()
 
-        return metadata.safety_level is ToolSafetyLevel.APPROVAL_REQUIRED
+        policy_requires_approval = (
+            namespace in self._POLICY_ENFORCED_NAMESPACES
+            and self.safety_policy.requires_approval(tool_name, {})
+        )
+
+        return (
+            metadata.safety_level is ToolSafetyLevel.APPROVAL_REQUIRED
+            or policy_requires_approval
+        )
 
     def execute(
         self,
@@ -78,17 +98,53 @@ class Executor:
         requires_approval: bool = False,
         approved: bool = False,
         approval_token: str | None = None,
-    ) -> ExecutionResult:
-        """Execute a registered tool according to its registered safety level.
+        task_id: str | None = None,
+        step_id: str | None = None,
+    ) -> ToolResult:
+        """Execute a tool and return a canonical ToolResult.
 
-        Caller-supplied flags can require additional approval but cannot
-        downgrade the tool's registered safety level.
+        Callers coordinating a plan should supply task_id and step_id.
+        Standalone calls receive generated identifiers.
+
+        The legacy ``approved`` flag is accepted for compatibility but never
+        authorizes an operation. Approval-required tools need a valid,
+        single-use token bound to the exact tool and arguments.
         """
+        resolved_task_id = (
+            task_id
+            if isinstance(task_id, str) and task_id.strip()
+            else uuid4().hex
+        )
+        resolved_step_id = (
+            step_id
+            if isinstance(step_id, str) and step_id.strip()
+            else uuid4().hex
+        )
+        display_name = (
+            tool_name.strip() if isinstance(tool_name, str) else str(tool_name)
+        )
+
+        if (
+            not isinstance(task_id, (str, type(None)))
+            or (isinstance(task_id, str) and not task_id.strip())
+            or not isinstance(step_id, (str, type(None)))
+            or (isinstance(step_id, str) and not step_id.strip())
+        ):
+            return self._failure(
+                display_name,
+                ErrorCode.INVALID_ARGUMENTS,
+                "Task and step identifiers must be non-empty strings when supplied.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
+            )
+
         if not isinstance(tool_name, str) or not tool_name.strip():
             return self._failure(
-                str(tool_name),
-                "INVALID_ARGUMENTS",
+                display_name,
+                ErrorCode.INVALID_ARGUMENTS,
                 "Tool name must be a non-empty string.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
             )
 
         normalized_name = tool_name.strip()
@@ -99,18 +155,28 @@ class Executor:
         if not isinstance(arguments, dict):
             return self._failure(
                 normalized_name,
-                "INVALID_ARGUMENTS",
+                ErrorCode.INVALID_ARGUMENTS,
                 "Tool arguments must be a dictionary.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
             )
 
-        if (
-            not isinstance(requires_approval, bool)
-            or not isinstance(approved, bool)
-        ):
+        if not isinstance(requires_approval, bool) or not isinstance(approved, bool):
             return self._failure(
                 normalized_name,
-                "INVALID_ARGUMENTS",
+                ErrorCode.INVALID_ARGUMENTS,
                 "Approval flags must be Boolean values.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
+            )
+
+        if approval_token is not None and not isinstance(approval_token, str):
+            return self._failure(
+                normalized_name,
+                ErrorCode.INVALID_ARGUMENTS,
+                "Approval token must be a string when supplied.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
             )
 
         try:
@@ -119,44 +185,60 @@ class Executor:
         except ToolNotFoundError:
             return self._failure(
                 normalized_name,
-                "TOOL_NOT_FOUND",
+                ErrorCode.TOOL_NOT_FOUND,
                 f"Tool '{normalized_name}' is not registered.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
             )
         except (TypeError, ValueError):
             return self._failure(
                 normalized_name,
-                "INVALID_ARGUMENTS",
+                ErrorCode.INVALID_ARGUMENTS,
                 "The tool name is invalid.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
             )
 
         if metadata.safety_level is ToolSafetyLevel.BLOCKED:
             return self._failure(
                 normalized_name,
-                "TOOL_BLOCKED",
+                ErrorCode.TOOL_BLOCKED,
                 "This tool is blocked by its registered safety policy.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
             )
 
         try:
-            signature = inspect.signature(tool)
-            signature.bind(**arguments)
+            inspect.signature(tool).bind(**arguments)
         except (TypeError, ValueError):
             return self._failure(
                 normalized_name,
-                "INVALID_ARGUMENTS",
+                ErrorCode.INVALID_ARGUMENTS,
                 "The supplied arguments do not match the tool's signature.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
             )
+
+        namespace = normalized_name.split(".", 1)[0].lower()
+        policy_requires_approval = (
+            namespace in self._POLICY_ENFORCED_NAMESPACES
+            and self.safety_policy.requires_approval(normalized_name, arguments)
+        )
 
         approval_needed = (
             metadata.safety_level is ToolSafetyLevel.APPROVAL_REQUIRED
             or requires_approval
+            or policy_requires_approval
         )
 
         if approval_needed:
             if approval_token is None:
                 return self._failure(
                     normalized_name,
-                    "APPROVAL_REQUIRED",
+                    ErrorCode.APPROVAL_REQUIRED,
                     "This operation requires a valid, action-bound approval token.",
+                    task_id=resolved_task_id,
+                    step_id=resolved_step_id,
                 )
 
             try:
@@ -171,29 +253,31 @@ class Executor:
             if not valid_approval:
                 return self._failure(
                     normalized_name,
-                    "APPROVAL_INVALID",
+                    ErrorCode.APPROVAL_INVALID,
                     "The approval is invalid, expired, already used, or for a different action.",
+                    task_id=resolved_task_id,
+                    step_id=resolved_step_id,
                 )
 
-        known_errors: tuple[tuple[type[Exception], str, str], ...] = (
+        known_errors: tuple[tuple[type[Exception], ErrorCode, str], ...] = (
             (
                 FilesystemToolError,
-                "INTERNAL_ERROR",
+                ErrorCode.INTERNAL_ERROR,
                 "The filesystem operation failed or was rejected.",
             ),
             (
                 TerminalToolError,
-                "INVALID_ARGUMENTS",
+                ErrorCode.INVALID_ARGUMENTS,
                 "The terminal operation was rejected or failed.",
             ),
             (
                 GitToolError,
-                "INTERNAL_ERROR",
+                ErrorCode.INTERNAL_ERROR,
                 "The Git operation failed.",
             ),
             (
                 BrowserToolError,
-                "PERMISSION_DENIED",
+                ErrorCode.PERMISSION_DENIED,
                 "The browser request was rejected or failed.",
             ),
         )
@@ -207,16 +291,23 @@ class Executor:
                         normalized_name,
                         error_code,
                         message,
+                        task_id=resolved_task_id,
+                        step_id=resolved_step_id,
                     )
 
             return self._failure(
                 normalized_name,
-                "INTERNAL_ERROR",
+                ErrorCode.INTERNAL_ERROR,
                 "The tool failed during execution.",
+                task_id=resolved_task_id,
+                step_id=resolved_step_id,
             )
 
-        return ExecutionResult(
+        return ToolResult(
+            task_id=resolved_task_id,
+            step_id=resolved_step_id,
             tool_name=normalized_name,
+            status=ExecutionStatus.SUCCEEDED,
             success=True,
             output=output,
             verified=False,
