@@ -1,6 +1,5 @@
 
 import sys
-from unittest import result
 
 import pytest
 
@@ -10,7 +9,7 @@ from execution.terminal import (
     TerminalTools,
     register_terminal_tools,
 )
-from execution.tool_registry import ToolRegistry
+from execution.tool_registry import ToolRegistry, ToolSafetyLevel
 
 
 @pytest.fixture
@@ -96,8 +95,7 @@ def test_timeout_is_reported(terminal):
     assert result["return_code"] is None
 
 
-
-def test_terminal_registered_and_executed(tmp_path):
+def test_terminal_registered_and_executed_with_token(tmp_path):
     registry = ToolRegistry()
     register_terminal_tools(registry, tmp_path)
     executor = Executor(registry)
@@ -109,6 +107,7 @@ def test_terminal_registered_and_executed(tmp_path):
             "print('registered tool')",
         ]
     }
+
     token = executor.approval_manager.issue(
         "terminal.run_command",
         arguments,
@@ -122,3 +121,53 @@ def test_terminal_registered_and_executed(tmp_path):
 
     assert result.success is True
     assert "registered tool" in str(result.output)
+
+
+def test_terminal_registration_requires_approval(tmp_path):
+    registry = ToolRegistry()
+    register_terminal_tools(registry, tmp_path)
+
+    metadata = registry.get_metadata("terminal.run_command")
+
+    assert metadata.safety_level is ToolSafetyLevel.APPROVAL_REQUIRED
+
+
+def test_terminal_requires_approval_token(tmp_path):
+    registry = ToolRegistry()
+    register_terminal_tools(registry, tmp_path)
+    executor = Executor(registry)
+
+    result = executor.execute(
+        "terminal.run_command",
+        {
+            "command": [
+                sys.executable,
+                "-c",
+                "print('should not execute')",
+            ]
+        },
+    )
+
+    assert result.success is False
+    assert result.error_code == "APPROVAL_REQUIRED"
+
+
+def test_terminal_approved_boolean_cannot_bypass_token(tmp_path):
+    registry = ToolRegistry()
+    register_terminal_tools(registry, tmp_path)
+    executor = Executor(registry)
+
+    result = executor.execute(
+        "terminal.run_command",
+        {
+            "command": [
+                sys.executable,
+                "-c",
+                "print('should not execute')",
+            ]
+        },
+        approved=True,
+    )
+
+    assert result.success is False
+    assert result.error_code == "APPROVAL_REQUIRED"

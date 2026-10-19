@@ -58,12 +58,20 @@ def test_create_execution_engine_registers_all_tools(tmp_path):
         "filesystem.list_directory",
         "filesystem.read_file",
         "filesystem.file_info",
+        "filesystem.create_file",
+        "filesystem.write_file",
+        "filesystem.delete_file",
         "terminal.run_command",
         "git.status",
         "git.current_branch",
         "git.diff",
         "git.recent_commits",
         "browser.fetch_page",
+        "browser.open_page",
+        "browser.inspect_page",
+        "browser.close_page",
+        "browser.click",
+        "browser.fill",
     }
 
     assert set(registry.list_tools()) == expected_tools
