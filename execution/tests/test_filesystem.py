@@ -126,3 +126,67 @@ def test_filesystem_error_is_handled_by_executor(workspace):
 def test_empty_path_is_rejected(filesystem):
     with pytest.raises(FilesystemToolError):
         filesystem.list_directory(" ")
+
+
+def test_create_file(filesystem, workspace):
+    result = filesystem.create_file("new.txt", "Hello PHANES!")
+
+    assert result["created"] is True
+    assert result["bytes_written"] == len(b"Hello PHANES!")
+    assert (workspace / "new.txt").read_text(encoding="utf-8") == "Hello PHANES!"
+
+
+def test_create_file_does_not_overwrite_existing_file(filesystem):
+    with pytest.raises(FilesystemToolError):
+        filesystem.create_file("hello.txt", "Overwrite attempt")
+
+    assert filesystem.read_file("hello.txt") == "Hello PHANES!"
+
+
+def test_write_file_creates_new_file(filesystem, workspace):
+    result = filesystem.write_file("written.txt", "New content")
+
+    assert result["written"] is True
+    assert result["bytes_written"] == len(b"New content")
+    assert (workspace / "written.txt").read_text(encoding="utf-8") == "New content"
+
+
+def test_write_file_overwrites_existing_file(filesystem):
+    result = filesystem.write_file("hello.txt", "Updated content")
+
+    assert result["written"] is True
+    assert filesystem.read_file("hello.txt") == "Updated content"
+
+
+def test_delete_file(filesystem, workspace):
+    result = filesystem.delete_file("hello.txt")
+
+    assert result["deleted"] is True
+    assert not (workspace / "hello.txt").exists()
+
+
+def test_delete_file_rejects_missing_file(filesystem):
+    with pytest.raises(FilesystemToolError):
+        filesystem.delete_file("missing.txt")
+
+
+def test_delete_file_rejects_directory(filesystem):
+    with pytest.raises(FilesystemToolError):
+        filesystem.delete_file("subfolder")
+
+
+def test_mutating_filesystem_tools_require_approval(workspace):
+    registry = ToolRegistry()
+    register_filesystem_tools(registry, workspace)
+    executor = Executor(registry)
+
+    operations = [
+        ("filesystem.create_file", {"path": "created.txt", "content": "test"}),
+        ("filesystem.write_file", {"path": "hello.txt", "content": "changed"}),
+        ("filesystem.delete_file", {"path": "hello.txt"}),
+    ]
+
+    for tool_name, arguments in operations:
+        result = executor.execute(tool_name, arguments)
+        assert result.success is False, f"{tool_name} unexpectedly succeeded"
+        assert result.error_code == "APPROVAL_REQUIRED"
