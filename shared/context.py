@@ -1,131 +1,54 @@
+"""Canonical context models for PHANES.
 
-"""Canonical shared contracts for PHANES.
-
-All modules must import shared types from this file.
-Do not create duplicate versions of these models in feature packages.
+Context-specific models belong here.
+Core task, execution, and approval contracts belong in shared/contracts.py.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
 from typing import Any
 
 
-class TaskStatus(str, Enum):
-    CREATED = "created"
-    PLANNING = "planning"
-    READY = "ready"
-    RUNNING = "running"
-    WAITING_APPROVAL = "waiting_approval"
-    CANCELLING = "cancelling"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    NEEDS_ATTENTION = "needs_attention"
+@dataclass(frozen=True)
+class ContextFile:
+    """A relevant file selected for task context."""
 
-
-class StepStatus(str, Enum):
-    PENDING = "pending"
-    READY = "ready"
-    RUNNING = "running"
-    WAITING_APPROVAL = "waiting_approval"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    SKIPPED = "skipped"
-    CANCELLED = "cancelled"
-    UNKNOWN = "unknown"
-
-
-class ExecutionStatus(str, Enum):
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    TIMED_OUT = "timed_out"
-    CANCELLED = "cancelled"
-    UNKNOWN = "unknown"
-
-
-class ApprovalStatus(str, Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    EXPIRED = "expired"
-    CONSUMED = "consumed"
-    INVALIDATED = "invalidated"
-
-
-class ErrorCode(str, Enum):
-    INVALID_ARGUMENTS = "INVALID_ARGUMENTS"
-    TOOL_NOT_FOUND = "TOOL_NOT_FOUND"
-    TOOL_BLOCKED = "TOOL_BLOCKED"
-    PERMISSION_DENIED = "PERMISSION_DENIED"
-    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
-    APPROVAL_INVALID = "APPROVAL_INVALID"
-    APPROVAL_EXPIRED = "APPROVAL_EXPIRED"
-    APPROVAL_REJECTED = "APPROVAL_REJECTED"
-    EXECUTION_TIMEOUT = "EXECUTION_TIMEOUT"
-    EXECUTION_CANCELLED = "EXECUTION_CANCELLED"
-    FILE_NOT_FOUND = "FILE_NOT_FOUND"
-    WORKSPACE_NOT_FOUND = "WORKSPACE_NOT_FOUND"
-    DATABASE_ERROR = "DATABASE_ERROR"
-    TEST_FAILURE = "TEST_FAILURE"
-    VERIFICATION_FAILED = "VERIFICATION_FAILED"
-    DEPENDENCY_FAILED = "DEPENDENCY_FAILED"
-    INTERNAL_ERROR = "INTERNAL_ERROR"
-    OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
+    path: str
+    content: str | None = None
+    description: str | None = None
 
 
 @dataclass(frozen=True)
-class ToolError:
-    code: ErrorCode
-    message: str
-    retryable: bool = False
-    details: dict[str, Any] = field(default_factory=dict)
+class ConversationMessage:
+    """A conversation message relevant to the current task."""
+
+    role: str
+    content: str
 
 
 @dataclass(frozen=True)
-class PlanStep:
-    step_id: str
-    tool: str
-    arguments: dict[str, Any] = field(default_factory=dict)
-    depends_on: list[str] = field(default_factory=list)
-    requires_approval: bool = False
-    description: str = ""
+class PreviousTaskResult:
+    """Relevant information from a previous task or execution."""
 
-
-@dataclass(frozen=True)
-class Plan:
     task_id: str
-    steps: list[PlanStep]
-    rationale: str = ""
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    task_id: str
-    step_id: str
-    status: ExecutionStatus
-    success: bool
-    output: Any = None
-    error: ToolError | None = None
+    summary: str
+    status: str | None = None
+    output: str | None = None
     verified: bool = False
     verification_details: str | None = None
 
 
 @dataclass(frozen=True)
-class ApprovalRequest:
-    approval_id: str
-    task_id: str
-    step_id: str
-    tool: str
-    arguments: dict[str, Any]
-    summary: str
-    expires_at: datetime
+class TaskContext:
+    """Structured context supplied to the PHANES planner."""
 
-
-@dataclass(frozen=True)
-class ApprovalDecision:
-    approval_id: str
-    task_id: str
-    step_id: str
-    approved: bool
-    decided_at: datetime
+    workspace_id: str
+    workspace_path: str
+    project_type: str | None = None
+    relevant_files: list[ContextFile] = field(default_factory=list)
+    previous_results: list[PreviousTaskResult] = field(
+        default_factory=list
+    )
+    conversation_history: list[ConversationMessage] = field(
+        default_factory=list
+    )
+    metadata: dict[str, Any] = field(default_factory=dict)
