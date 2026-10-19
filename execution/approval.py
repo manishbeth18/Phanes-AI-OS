@@ -1,4 +1,3 @@
-
 """Action-bound, expiring, single-use approvals for PHANES."""
 
 from __future__ import annotations
@@ -22,15 +21,32 @@ class ApprovalRecord:
 
 
 class ApprovalManager:
-    """Issue and consume short-lived, single-use approval tokens."""
+    """Issue and consume short-lived, single-use approval tokens.
 
-    def __init__(self) -> None:
+    Expired records are purged during issuance and consumption. The manager
+    also caps outstanding approvals so abandoned tokens cannot grow storage
+    without bound. When full, issuance fails rather than evicting a still-valid
+    approval.
+    """
+
+    def __init__(self, max_pending: int = 1000) -> None:
+        if (
+            isinstance(max_pending, bool)
+            or not isinstance(max_pending, int)
+            or max_pending < 1
+        ):
+            raise ValueError("max_pending must be a positive integer.")
+
+        self._max_pending = max_pending
         self._approvals: dict[str, ApprovalRecord] = {}
         self._lock = threading.Lock()
 
     @staticmethod
     def _arguments_hash(arguments: dict[str, Any]) -> str:
-        """Create a stable fingerprint of JSON-compatible arguments."""
+        """Create a stable fingerprint of JSON-compatible dictionary arguments."""
+        if not isinstance(arguments, dict):
+            raise ValueError("Approval arguments must be a dictionary.")
+
         try:
             serialized = json.dumps(
                 arguments,
@@ -39,12 +55,22 @@ class ApprovalManager:
                 ensure_ascii=False,
                 allow_nan=False,
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, RecursionError) as exc:
             raise ValueError(
                 "Approval arguments must be JSON-serializable."
             ) from exc
 
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _purge_expired_locked(self, now: float) -> None:
+        """Remove expired records. Caller must hold ``self._lock``."""
+        expired_tokens = [
+            token
+            for token, record in self._approvals.items()
+            if now >= record.expires_at
+        ]
+        for token in expired_tokens:
+            self._approvals.pop(token, None)
 
     def issue(
         self,
@@ -57,6 +83,10 @@ class ApprovalManager:
 
         The caller must obtain trusted user confirmation before issuing
         an approval. This method does not itself ask the user.
+
+        Raises:
+            ValueError: If inputs are invalid.
+            RuntimeError: If the outstanding-approval capacity is full.
         """
         if not isinstance(tool_name, str) or not tool_name.strip():
             raise ValueError("tool_name must be a non-empty string.")
@@ -78,8 +108,16 @@ class ApprovalManager:
         )
 
         with self._lock:
-            token = secrets.token_urlsafe(32)
+            now = time.monotonic()
+            self._purge_expired_locked(now)
 
+            if len(self._approvals) >= self._max_pending:
+                raise RuntimeError(
+                    "Outstanding approval capacity is full; retry after "
+                    "pending approvals are consumed or expire."
+                )
+
+            token = secrets.token_urlsafe(32)
             while token in self._approvals:
                 token = secrets.token_urlsafe(32)
 
@@ -107,12 +145,10 @@ class ApprovalManager:
             return False
 
         with self._lock:
+            self._purge_expired_locked(time.monotonic())
             record = self._approvals.pop(token, None)
 
         if record is None:
-            return False
-
-        if time.monotonic() >= record.expires_at:
             return False
 
         return (
