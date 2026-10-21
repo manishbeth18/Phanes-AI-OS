@@ -1,20 +1,69 @@
-
-# Python virtual environment
-.venv/
-
-# Python cache files
+# Python
 __pycache__/
 *.py[cod]
-.pytest_cache/
+*$py.class
 
-# Local SQLite databases
-*.db
-*.sqlite
-*.sqlite3
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
 
 # Environment variables and secrets
 .env
 .env.*
+!.env.example
 
-# IDE settings
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checking and linting
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# IDEs and editors
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temporary files
+*.tmp
+*.temp
+
+# PHANES local integration backups and generated patches
+integration_backup/
+team-integration.patch
