@@ -501,6 +501,8 @@ class ConcreteTaskService(TaskService):
                     step.step_id,
                 )
 
+                execution_started = False
+
                 try:
                     approval_token = None
                     needs_approval = self._requires_approval(
@@ -523,6 +525,7 @@ class ConcreteTaskService(TaskService):
                             task_id,
                             step.step_id,
                         )
+                        execution_started = True
 
                     result = executor.execute(
                         step.tool,
@@ -550,6 +553,26 @@ class ConcreteTaskService(TaskService):
                     )
 
                 except TaskCancelledError:
+                    if self._persistence is not None and execution_started:
+                        unknown_result = ToolResult(
+                            task_id=task_id,
+                            step_id=step.step_id,
+                            tool_name=step.tool,
+                            status=ExecutionStatus.UNKNOWN,
+                            success=False,
+                            output=None,
+                            error=ToolError(
+                                code=ErrorCode.INTERNAL_ERROR,
+                                message=(
+                                    "Task cancellation interrupted execution; "
+                                    "the tool outcome could not be confirmed."
+                                ),
+                                retryable=False,
+                                details={"outcome": "unknown"},
+                            ),
+                            verified=False,
+                        )
+                        self._persistence.complete_execution(unknown_result)
                     raise
 
                 except Exception as exc:
