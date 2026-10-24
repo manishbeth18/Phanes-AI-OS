@@ -1,3 +1,4 @@
+
 """Adapter between PHANES canonical contracts and SQLite storage."""
 
 from pathlib import Path
@@ -80,7 +81,6 @@ class TaskPersistenceAdapter:
 
         self.storage.workspaces.upsert(workspace)
 
-        # Read back the stored workspace.
         existing = self.storage.workspaces.get_by_path(root)
         if existing is not None:
             return existing.workspace_id
@@ -153,9 +153,27 @@ class TaskPersistenceAdapter:
         self,
         task_id: str,
         step_id: str,
-        attempt_number: int = 1,
+        attempt_number: int | None = None,
     ) -> str:
-        """Record an execution attempt before running a tool."""
+        """Record an execution attempt before running a tool.
+
+        If no attempt number is supplied, choose the next number for
+        this step based on the attempts already persisted in SQLite.
+        """
+        if attempt_number is None:
+            previous_executions = self.storage.executions.list_for_task(task_id)
+            attempt_number = (
+                max(
+                    (
+                        execution.attempt_number
+                        for execution in previous_executions
+                        if execution.step_id == step_id
+                    ),
+                    default=0,
+                )
+                + 1
+            )
+
         execution_id = str(uuid4())
 
         self.storage.executions.create(
@@ -210,6 +228,10 @@ class TaskPersistenceAdapter:
             stored_status = StepStatus.CANCELLED
         elif result.status == ExecutionStatus.UNKNOWN:
             stored_status = StepStatus.UNKNOWN
+        elif result.status == ExecutionStatus.TIMED_OUT:
+            # Storage uses FAILED for timed-out attempts; the error code
+            # and details preserve the timeout information.
+            stored_status = StepStatus.FAILED
         elif error_code == "DEPENDENCY_FAILED":
             stored_status = StepStatus.SKIPPED
         else:
