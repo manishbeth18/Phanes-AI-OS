@@ -17,6 +17,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
+from pathlib import Path
+
+from planner.planner import validate_plan
+from shared.context import ConversationMessage, TaskContext
+
 from execution.approval_gate import (
     ApprovalGate,
     ApprovalGateError,
@@ -111,8 +116,8 @@ class ConcreteTaskService(TaskService):
         approval_timeout_seconds: float = 300.0,
         repository_root: str | None = None,
     ) -> None:
-        if not callable(planner):
-            raise TypeError("planner must be callable.")
+        if not callable(planner) and not callable(getattr(planner, "create_plan", None)):
+            raise TypeError("planner must be callable or expose create_plan().")
 
         if context_provider is not None and not callable(context_provider):
             raise TypeError("context_provider must be callable or None.")
@@ -387,6 +392,13 @@ class ConcreteTaskService(TaskService):
 
             self._check_cancelled(task_id)
 
+            # Create the execution engine first so planning can be checked
+            # against the actual registered tool catalogue before execution.
+            registry, executor = create_execution_engine(
+                record.workspace,
+                repository_root=self._repository_root,
+            )
+
             context = None
             if self._context_provider is not None:
                 context = self._context_provider(
@@ -394,15 +406,67 @@ class ConcreteTaskService(TaskService):
                     record.goal,
                 )
 
-            plan = self._planner(record.goal, record.workspace, context)
+            create_plan = getattr(self._planner, "create_plan", None)
+
+            if callable(create_plan):
+                # P1's Planner requires a canonical TaskContext and the
+                # orchestrator's task ID.
+                workspace_path = str(
+                    Path(record.workspace).expanduser().resolve(strict=True)
+                )
+
+                if context is None:
+                    context = TaskContext(
+                        workspace_id=workspace_path,
+                        workspace_path=workspace_path,
+                        conversation_history=[
+                            ConversationMessage(
+                                role="user",
+                                content=record.goal,
+                            )
+                        ],
+                        metadata={"context_source": "task_service_fallback"},
+                    )
+                elif not isinstance(context, TaskContext):
+                    raise TypeError(
+                        "The P1 Planner requires the context provider "
+                        "to return shared.context.TaskContext or None."
+                    )
+
+                context_path = str(
+                    Path(context.workspace_path).expanduser().resolve(strict=True)
+                )
+                if context_path != workspace_path:
+                    raise ValueError(
+                        "Context workspace path does not match the "
+                        "execution workspace."
+                    )
+
+                plan = create_plan(
+                    goal=record.goal,
+                    workspace_id=context.workspace_id,
+                    context=context,
+                    task_id=task_id,
+                )
+            else:
+                # Backward compatibility for the original callable API.
+                plan = self._planner(
+                    record.goal,
+                    record.workspace,
+                    context,
+                )
+
+            # Keep the service's existing structural validation and add
+            # P1 validation against the tools actually registered here.
             self._validate_plan(plan)
+            validate_plan(
+                plan,
+                allowed_tools=registry.list_tools(),
+            )
 
             self._check_cancelled(task_id)
 
-            _, executor = create_execution_engine(
-                record.workspace,
-                repository_root=self._repository_root,
-            )
+            gate = ApprovalGate(executor.approval_manager)
             gate = ApprovalGate(executor.approval_manager)
 
             with self._lock:
