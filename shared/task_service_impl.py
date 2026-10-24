@@ -1,11 +1,12 @@
-
 """Concrete PHANES task service.
 
 Connects the planner, context provider, execution engine, approval gate,
 and UI-facing events defined in shared/service.py.
 
-The service is in-memory for now. Persistent task history can be added later
-without changing the TaskService interface.
+Task lifecycle service with optional SQLite persistence.
+
+Persistence is injected so callers that do not configure a database retain
+the original in-memory behavior.
 """
 
 from __future__ import annotations
@@ -106,6 +107,9 @@ class ConcreteTaskService(TaskService):
             Maximum time to wait for a human approval decision.
         repository_root:
             Optional repository path for Git tools. Defaults to workspace.
+        persistence:
+            Optional TaskPersistenceAdapter-compatible object. When supplied,
+            tasks, plans, statuses, and execution results are persisted.
     """
 
     def __init__(
@@ -115,6 +119,7 @@ class ConcreteTaskService(TaskService):
         *,
         approval_timeout_seconds: float = 300.0,
         repository_root: str | None = None,
+        persistence: Any | None = None,
     ) -> None:
         if not callable(planner) and not callable(getattr(planner, "create_plan", None)):
             raise TypeError("planner must be callable or expose create_plan().")
@@ -133,6 +138,7 @@ class ConcreteTaskService(TaskService):
         self._context_provider = context_provider
         self._approval_timeout_seconds = float(approval_timeout_seconds)
         self._repository_root = repository_root
+        self._persistence = persistence
 
         self._lock = threading.RLock()
         self._subscribers: set[EventCallback] = set()
@@ -172,6 +178,15 @@ class ConcreteTaskService(TaskService):
             goal=goal.strip(),
             workspace=workspace.strip(),
         )
+
+        # Persist before starting the worker, so a submitted task is not lost
+        # if the process exits immediately after acceptance.
+        if self._persistence is not None:
+            self._persistence.create_task(
+                task_id,
+                record.workspace,
+                record.goal,
+            )
 
         with self._lock:
             self._tasks[task_id] = record
@@ -338,6 +353,9 @@ class ConcreteTaskService(TaskService):
             if status in self._terminal_statuses():
                 record.finished_at = datetime.now(timezone.utc)
 
+        if self._persistence is not None:
+            self._persistence.update_task_status(task_id, status)
+
         self._emit(
             TaskEvent(
                 task_id=task_id,
@@ -464,9 +482,11 @@ class ConcreteTaskService(TaskService):
                 allowed_tools=registry.list_tools(),
             )
 
+            if self._persistence is not None:
+                self._persistence.save_plan(task_id, plan.steps)
+
             self._check_cancelled(task_id)
 
-            gate = ApprovalGate(executor.approval_manager)
             gate = ApprovalGate(executor.approval_manager)
 
             with self._lock:
@@ -518,6 +538,8 @@ class ConcreteTaskService(TaskService):
                         + ", ".join(failed_dependencies),
                     )
                     results[step.step_id] = result
+                    if self._persistence is not None:
+                        self._persistence.complete_execution(result)
                     self._emit(StepFinishedEvent(result=result))
                     self._log(
                         task_id,
@@ -542,6 +564,8 @@ class ConcreteTaskService(TaskService):
                     step.step_id,
                 )
 
+                execution_started = False
+
                 try:
                     approval_token = None
                     needs_approval = self._requires_approval(
@@ -558,6 +582,13 @@ class ConcreteTaskService(TaskService):
                         )
 
                     self._check_cancelled(task_id)
+
+                    if self._persistence is not None:
+                        self._persistence.start_execution(
+                            task_id,
+                            step.step_id,
+                        )
+                        execution_started = True
 
                     result = executor.execute(
                         step.tool,
@@ -583,6 +614,40 @@ class ConcreteTaskService(TaskService):
                         ErrorCode.APPROVAL_EXPIRED,
                         str(exc),
                     )
+
+                except TaskCancelledError:
+                    if self._persistence is not None and execution_started:
+                        unknown_result = ToolResult(
+                            task_id=task_id,
+                            step_id=step.step_id,
+                            tool_name=step.tool,
+                            status=ExecutionStatus.UNKNOWN,
+                            success=False,
+                            output=None,
+                            error=ToolError(
+                                code=ErrorCode.INTERNAL_ERROR,
+                                message=(
+                                    "Task cancellation interrupted execution; "
+                                    "the tool outcome could not be confirmed."
+                                ),
+                                retryable=False,
+                                details={"outcome": "unknown"},
+                            ),
+                            verified=False,
+                        )
+                        self._persistence.complete_execution(unknown_result)
+                    raise
+
+                except Exception as exc:
+                    result = self._make_failure(
+                        task_id,
+                        step,
+                        ErrorCode.INTERNAL_ERROR,
+                        f"{type(exc).__name__}: {exc}",
+                    )
+
+                if self._persistence is not None:
+                    self._persistence.complete_execution(result)
 
                 results[step.step_id] = result
                 self._emit(StepFinishedEvent(result=result))
