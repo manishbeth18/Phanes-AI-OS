@@ -18,12 +18,13 @@ HOW IT STAYS HONEST (architecture rules)
     * The UI has no shell, no SQL. The backend is injected (TaskService).
 
     
-LATER: split into ui/ modules, swap SimulatedTaskService for the real
-orchestrator, and map the event dataclasses onto shared/schemas.py models.
-Status strings below intentionally match the architecture document's enums.
+The concrete task service is wired into the application entry point.
+SimulatedTaskService remains available for prototype and UI testing.
 """
 
 from __future__ import annotations
+
+from storage.task_persistence_adapter import TaskPersistenceAdapter
 
 import math
 import re
@@ -45,6 +46,10 @@ from shared.service import (
     TaskFinishedEvent,
 )
 from shared.contracts import ApprovalDecision, TaskStatus as SharedTaskStatus
+from shared.context_provider import WorkspaceContextProvider
+from shared.edit_aware_planner import EditAwarePlanner
+from shared.task_service_impl import ConcreteTaskService
+from shared.llm.result_interpreter import LLMResultInterpreter
 
 from PySide6.QtCore import (
     QByteArray,
@@ -1363,10 +1368,26 @@ class FilterChip(QPushButton):
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(
-            f"QPushButton{{background:{css('#FFFFFF', 0.04)};color:{MUTED};border:1px solid {css('#FFFFFF', 0.10)};"
-            "border-radius:16px;padding:7px 18px;font-size:13px;font-weight:600;}}"
-            f"QPushButton:hover{{color:{TEXT};}}"
-            f"QPushButton:checked{{background:{css(MINT, 0.14)};color:{MINT};border-color:{css(MINT, 0.45)};}}"
+            """
+            QPushButton {
+                background-color: #1B202C;
+                color: #9AA6BD;
+                border: 1px solid #343B4C;
+                border-radius: 16px;
+                padding: 7px 18px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                color: #F0F3FA;
+                background-color: #252D3A;
+            }
+            QPushButton:checked {
+                background-color: #203A3B;
+                color: #8BE9D0;
+                border: 1px solid #477C75;
+            }
+            """
         )
 
 
@@ -2011,6 +2032,31 @@ class StepRow(QWidget):
         self.detail = label("", 12, MUTED, wrap=True)
         self.detail.hide()
         body.addWidget(self.detail)
+
+        self.output_label = label("Tool output", 11, MINT, "600")
+        self.output_label.hide()
+        body.addWidget(self.output_label)
+
+        self.output_text = QPlainTextEdit()
+        self.output_text.setReadOnly(True)
+        self.output_text.setMaximumHeight(180)
+        self.output_text.setMinimumHeight(60)
+        self.output_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.output_text.setStyleSheet(
+            f"""
+            QPlainTextEdit {{
+                background: #111722;
+                color: {TEXT};
+                border: 1px solid #343B4C;
+                border-radius: 8px;
+                padding: 8px;
+                font-family: Consolas, monospace;
+                font-size: 12px;
+            }}
+            """
+        )
+        self.output_text.hide()
+        body.addWidget(self.output_text)
         row.addLayout(body, 1)
         self.update_from(step)
 
@@ -2027,6 +2073,11 @@ class StepRow(QWidget):
             verdict = "Verified. " if step.result.verified else "Not verified. "
             self.detail.setText(verdict + (step.result.details or "The backend did not report what was checked."))
             self.detail.show()
+            output = step.result.output.strip()
+            self.output_text.setPlainText(output)
+            has_output = bool(output)
+            self.output_label.setVisible(has_output)
+            self.output_text.setVisible(has_output)
         elif step.status == "completed":
             self.outcome_pill.set("No result reported", "muted")
             self.outcome_pill.show()
@@ -2331,6 +2382,19 @@ class RunPage(QWidget):
         root.setContentsMargins(0, 8, 0, 48)
         root.setSpacing(16)
         root.addWidget(tag("The brief", MINT))
+        self.response_card = Glass(radius=18)
+        response_layout = QVBoxLayout(self.response_card)
+        response_layout.setContentsMargins(22, 18, 22, 18)
+        response_layout.setSpacing(8)
+
+        response_layout.addWidget(tag("PHANES RESPONSE", MINT))
+        self.response_text = label("", 14, TEXT, wrap=True)
+        self.response_text.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        response_layout.addWidget(self.response_text)
+        self.response_card.hide()
+        root.addWidget(self.response_card)
         self.goal = label("", 28, TEXT, "600", wrap=True)
         root.addWidget(self.goal)
         self.summary = label("", 13, MUTED, face="mono")
@@ -2387,6 +2451,8 @@ class RunPage(QWidget):
         self.log.clear()
         self.banner.hide()
         self.summary.setText("")
+        self.response_text.setText("")
+        self.response_card.hide()
         self.scroll.scroll_to(0)
 
     def _clear_rows(self) -> None:
@@ -2408,6 +2474,10 @@ class RunPage(QWidget):
         row = self._rows.get(step.step_id)
         if row:
             row.update_from(step)
+
+    def show_response(self, text: str) -> None:
+        self.response_text.setText(text)
+        self.response_card.setVisible(bool(text.strip()))
 
     def append_log(self, text: str, level: str = "info") -> None:
         colors = {"info": MUTED, "stdout": TEXT, "stderr": CORAL, "warning": AMBER, "error": CORAL}
@@ -2488,13 +2558,22 @@ class ActivityPanel(Glass):
         root.addStretch(1)
 
         self.sim_card = Glass(radius=14, tint=0.04)
-        self.sim_card.accent = AMBER
+        self.sim_card.accent = MINT
         self.sim_card.tone_mix = 0.55
         sl = QVBoxLayout(self.sim_card)
         sl.setContentsMargins(14, 12, 14, 12)
         sl.setSpacing(3)
-        sl.addWidget(label("Simulated backend", 13, AMBER, "600"))
-        sl.addWidget(label("The planner and execution engine are not connected. Everything shown for tasks is scripted; nothing touches your files.", 12, MUTED, wrap=True))
+        sl.addWidget(label("Concrete backend active", 13, MINT, "600"))
+        sl.addWidget(
+            label(
+                "PHANES is using the concrete task service with a "
+                "restricted read-only planner. Write and destructive "
+                "requests are not enabled by this planner.",
+                12,
+                MUTED,
+                wrap=True,
+            )
+        )
         root.addWidget(self.sim_card)
 
     def _metric(self, name: str, value: str) -> tuple[Glass, QLabel]:
@@ -2689,14 +2768,15 @@ class FadeStack(QStackedWidget):
         anim.start()
         self._anim = anim
 
-
+class ServiceEventBridge(QObject):
+    event_received = Signal(object)
 # =============================================================================
 # 8. MAIN WINDOW
 # =============================================================================
 class MainWindow(QMainWindow):
     DRAWER_MIN_WIDTH = 1240
 
-    def __init__(self, service: SimulatedTaskService):
+    def __init__(self, service: TaskService):
         super().__init__()
         self.service = service
         self.state = TaskState()
@@ -2746,7 +2826,11 @@ class MainWindow(QMainWindow):
         self.run.back_requested.connect(self._back_home)
         self.run.cancel_requested.connect(self._cancel)
         self.run.review_requested.connect(self._open_approval)
-        self._unsubscribe = service.subscribe(self._on_service_event)
+        self._event_bridge = ServiceEventBridge(self)
+        self._event_bridge.event_received.connect(self._on_service_event)
+        self._unsubscribe = service.subscribe(
+            self._event_bridge.event_received.emit
+        )
         for sequence, handler in (("Ctrl+K", self._toggle_palette), ("Ctrl+Shift+A", self._toggle_drawer), ("Ctrl+N", self._new_task)):
             QShortcut(QKeySequence(sequence), self).activated.connect(handler)
 
@@ -2936,8 +3020,10 @@ class MainWindow(QMainWindow):
             step_id = str(getattr(request, "step_id", ""))
             tool = str(getattr(request, "tool", "action"))
             arguments = getattr(request, "arguments", {}) or {}
-            summary = str(getattr(request, "reason", "") or getattr(request, "description", "")
-                          or f"The backend requests approval for {tool}.")
+            summary = str(
+                getattr(request, "summary", "")
+                or f"The backend requests approval for {tool}."
+            )
             self._on_event(ApprovalEv(approval_id, step_id, tool, summary, dict(arguments)))
             return
 
@@ -2954,9 +3040,28 @@ class MainWindow(QMainWindow):
         if isinstance(event, TaskFinishedEvent):
             raw = getattr(event.status, "value", event.status)
             status = str(raw).lower()
-            status_map = {"succeeded": "completed", "success": "completed", "completed": "completed",
-                          "failed": "failed", "cancelled": "cancelled", "needs_attention": "unknown"}
-            self._on_event(TaskStatusEv(status_map.get(status, "unknown"), getattr(event, "summary", "")))
+            status_map = {
+                "succeeded": "completed",
+                "success": "completed",
+                "completed": "completed",
+                "failed": "failed",
+                "cancelled": "cancelled",
+                "needs_attention": "unknown",
+            }
+            mapped_status = status_map.get(status, "unknown")
+            summary = str(getattr(event, "summary", "") or "")
+
+            # TaskEvent may already have delivered the terminal status.
+            # Avoid logging the same terminal transition twice.
+            if (
+                mapped_status in TERMINAL
+                and self.state.status == mapped_status
+            ):
+                if summary and not self.state.message:
+                    self.state.message = summary
+                return
+
+            self._on_event(TaskStatusEv(mapped_status, summary))
             return
 
         # Keep diagnostics visible for event types the shared contract adds later.
@@ -2990,12 +3095,34 @@ class MainWindow(QMainWindow):
         elif isinstance(ev, ResultEv):
             step = st.step(ev.step_id)
             if step is None:
-                self.run.append_log(f"Ignored a result for unknown step {ev.step_id}.", "warning")
+                self.run.append_log(
+                    f"Ignored a result for unknown step {ev.step_id}.",
+                    "warning",
+                )
             else:
                 step.result, step.status = ev.result, ev.result.status
                 self.run.update_step(step)
+
                 outcome, tone = classify(ev.result)
-                self.run.append_log(f"{step.title}: {outcome}", "error" if tone == "danger" else "info")
+                self.run.append_log(
+                    f"{step.title}: {outcome}",
+                    "error" if tone == "danger" else "info",
+                )
+
+                if ev.result.success:
+                    try:
+                        interpreter = LLMResultInterpreter()
+                        response = interpreter.interpret(
+                            st.goal,
+                            step.tool,
+                            ev.result.output,
+                        )
+                        self.run.show_response(response)
+                    except Exception as exc:
+                        self.run.append_log(
+                            f"Result interpretation failed: {exc}",
+                            "warning",
+                        )
         elif isinstance(ev, ApprovalEv):
             st.approval = ev
             self.run.append_log(f"Approval requested for {ev.tool}.", "warning")
@@ -3086,8 +3213,27 @@ def main() -> int:
         f"QScrollBar::handle:vertical:hover{{background:{css('#FFFFFF', 0.26)};}}"
         "QScrollBar::add-line,QScrollBar::sub-line{height:0;width:0;} QScrollBar::add-page,QScrollBar::sub-page{background:transparent;}"
     )
-    service = SimulatedTaskService()
+    local_app_data = Path(
+        __import__("os").environ.get(
+            "LOCALAPPDATA",
+            str(Path.home() / "AppData" / "Local"),
+        )
+    )
+    data_dir = local_app_data / "PHANES"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    persistence = TaskPersistenceAdapter(data_dir / "phanes.sqlite3")
+
+    service = ConcreteTaskService(
+        planner=EditAwarePlanner(),
+        context_provider=WorkspaceContextProvider(),
+        approval_timeout_seconds=300,
+        persistence=persistence,
+    )
+
+    app.aboutToQuit.connect(persistence.close)
     window = MainWindow(service)
+
     window.show()
     return app.exec()
 
