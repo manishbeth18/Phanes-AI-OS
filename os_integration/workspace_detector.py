@@ -25,12 +25,21 @@ class WorkspaceDetector:
         if candidate.is_file():
             candidate = candidate.parent
 
+        home = Path.home().expanduser().resolve()
+
         for directory in (candidate, *candidate.parents):
+            # Always allow the supplied directory itself to be a project,
+            # even when it is outside the user's home directory.
             if any(
                 (directory / marker).exists()
                 for marker in self.PROJECT_MARKERS
             ):
                 return directory
+
+            # Do not inherit a workspace marker from the user's home
+            # directory or its ancestors.
+            if directory == home or home in directory.parents:
+                break
 
         return None
 

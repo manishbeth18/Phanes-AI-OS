@@ -180,7 +180,7 @@ def test_task_service_persists_execution_when_cancelled_during_tool(tmp_path):
     try:
         with patch(
             "shared.task_service_impl.create_execution_engine",
-            return_value=(None, executor),
+            return_value=(registry, executor),
         ), patch(
             "shared.task_service_impl.ApprovalGate",
             FakeGate,
