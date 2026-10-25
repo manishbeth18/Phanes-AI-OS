@@ -81,6 +81,16 @@ python -m pytest -q
 
 Here's a preview of the PHANES AI-OS desktop interface.
 <img width="1600" height="899" alt="PIC 1" src="https://github.com/user-attachments/assets/96369bde-e552-4d09-9f4e-0177a68e2857" />
+<img width="1917" height="1015" alt="PIC 9" src="https://github.com/user-attachments/assets/26e9f1fd-706c-4170-b6b3-49d308e7b8e5" />
+<img width="1600" height="899" alt="PIC 2" src="https://github.com/user-attachments/assets/3f3f17bb-a5c5-41b2-acf7-b589be6a94e7" />
+<img width="1600" height="899" alt="PIC 3" src="https://github.com/user-attachments/assets/fa1367e1-f6e5-460c-9aa1-cdee838db8f7" />
+<img width="1600" height="900" alt="PIC 4" src="https://github.com/user-attachments/assets/b90ac513-92ef-4040-9661-1538c86a6e9c" />
+<img width="1600" height="899" alt="PIC 5" src="https://github.com/user-attachments/assets/c9e4f2cd-cf27-4c66-9c5f-4213d01cfbbc" />
+<img width="1917" height="1015" alt="PIC 6" src="https://github.com/user-attachments/assets/7824d8eb-d66c-40e4-8373-d1109aba95a8" />
+<img width="1917" height="1018" alt="PIC 7" src="https://github.com/user-attachments/assets/289a4c25-eec2-4ef9-adc4-eaf1e5a84a8c" />
+<img width="1917" height="1016" alt="PIC 8" src="https://github.com/user-attachments/assets/1e109246-4d9d-412b-8dfe-8d741fbc5af6" />
+
+
 
 
 
