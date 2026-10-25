@@ -80,6 +80,8 @@ python -m pytest -q
 ## 📸 PHANES UI Preview
 
 Here's a preview of the PHANES AI-OS desktop interface.
+<img width="1600" height="899" alt="PIC 1" src="https://github.com/user-attachments/assets/96369bde-e552-4d09-9f4e-0177a68e2857" />
+
 
 
 
