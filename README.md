@@ -77,6 +77,14 @@ Select a workspace and submit a task. For protected operations, inspect the prop
 python -m pytest -q
 ```
 
+## 📸 PHANES UI Preview
+
+Here's a preview of the PHANES AI-OS desktop interface.
+
+
+
+
+
 ## Safety notes
 
 - Protected operations require approval through the execution system.
